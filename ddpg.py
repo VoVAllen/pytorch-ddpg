@@ -29,12 +29,12 @@ class DDPG(object):
             'hidden2':args.hidden2, 
             'init_w':args.init_w
         }
-        self.actor = Actor(self.nb_states, self.nb_actions, **net_cfg)
-        self.actor_target = Actor(self.nb_states, self.nb_actions, **net_cfg)
+        self.actor = Actor(self.nb_states, self.nb_actions, **net_cfg).to(DEVICES)
+        self.actor_target = Actor(self.nb_states, self.nb_actions, **net_cfg).to(DEVICES)
         self.actor_optim  = Adam(self.actor.parameters(), lr=args.prate)
 
-        self.critic = Critic(self.nb_states, self.nb_actions, **net_cfg)
-        self.critic_target = Critic(self.nb_states, self.nb_actions, **net_cfg)
+        self.critic = Critic(self.nb_states, self.nb_actions, **net_cfg).to(DEVICES)
+        self.critic_target = Critic(self.nb_states, self.nb_actions, **net_cfg).to(DEVICES)
         self.critic_optim  = Adam(self.critic.parameters(), lr=args.rate)
 
         hard_update(self.actor_target, self.actor) # Make sure target is with the same weight
@@ -56,28 +56,25 @@ class DDPG(object):
         self.a_t = None # Most recent action
         self.is_training = True
 
-        # 
-        if USE_CUDA: self.cuda()
-
     def update_policy(self):
         # Sample batch
         state_batch, action_batch, reward_batch, \
         next_state_batch, terminal_batch = self.memory.sample_and_split(self.batch_size)
 
         # Prepare for the target q batch
-        next_q_values = self.critic_target([
-            to_tensor(next_state_batch, volatile=True),
-            self.actor_target(to_tensor(next_state_batch, volatile=True)),
-        ])
-        next_q_values.volatile=False
+        with torch.no_grad():
+            next_q_values = self.critic_target([
+                np_to_tensor(next_state_batch),
+                self.actor_target(np_to_tensor(next_state_batch)),
+            ])
 
-        target_q_batch = to_tensor(reward_batch) + \
-            self.discount*to_tensor(terminal_batch.astype(np.float))*next_q_values
+        target_q_batch = np_to_tensor(reward_batch) + \
+                         self.discount * np_to_tensor(terminal_batch.astype(np.float)) * next_q_values
 
         # Critic update
         self.critic.zero_grad()
 
-        q_batch = self.critic([ to_tensor(state_batch), to_tensor(action_batch) ])
+        q_batch = self.critic([np_to_tensor(state_batch), np_to_tensor(action_batch)])
         
         value_loss = criterion(q_batch, target_q_batch)
         value_loss.backward()
@@ -87,8 +84,8 @@ class DDPG(object):
         self.actor.zero_grad()
 
         policy_loss = -self.critic([
-            to_tensor(state_batch),
-            self.actor(to_tensor(state_batch))
+            np_to_tensor(state_batch),
+            self.actor(np_to_tensor(state_batch))
         ])
 
         policy_loss = policy_loss.mean()
@@ -105,12 +102,6 @@ class DDPG(object):
         self.critic.eval()
         self.critic_target.eval()
 
-    def cuda(self):
-        self.actor.cuda()
-        self.actor_target.cuda()
-        self.critic.cuda()
-        self.critic_target.cuda()
-
     def observe(self, r_t, s_t1, done):
         if self.is_training:
             self.memory.append(self.s_t, self.a_t, r_t, done)
@@ -123,7 +114,7 @@ class DDPG(object):
 
     def select_action(self, s_t, decay_epsilon=True):
         action = to_numpy(
-            self.actor(to_tensor(np.array([s_t])))
+            self.actor(np_to_tensor(np.array([s_t])))
         ).squeeze(0)
         action += self.is_training*max(self.epsilon, 0)*self.random_process.sample()
         action = np.clip(action, -1., 1.)
@@ -162,5 +153,4 @@ class DDPG(object):
 
     def seed(self,s):
         torch.manual_seed(s)
-        if USE_CUDA:
-            torch.cuda.manual_seed(s)
+        torch.cuda.manual_seed(s)
